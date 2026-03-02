@@ -40,7 +40,6 @@ def load_data():
         return df
     except: return None
 
-# 初始化
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 if 'tracking' not in st.session_state:
@@ -130,22 +129,24 @@ if st.session_state.df is not None:
                 st.session_state.df = df
                 st.rerun()
 
-        # --- 🚨 危险区域：重置功能 ---
+        # --- 🚨 隐藏的管理工具 ---
         st.write("---")
-        st.subheader("🚨 危险操作")
-        if st.button("🗑️ 清空所有已用天数"):
-            # 逻辑：Used 列清零，Remaining 恢复等于 Paid
-            df["Vacation_Used"] = 0.0
-            df["Vacation_Remaining"] = df["Vacation_Paid"]
-            df["Sick_Used"] = 0.0
-            df["Sick_Remaining"] = df["Sick_Paid"]
-            df["Personal_Used"] = 0.0
-            df["Personal_Remaining"] = df["Personal_Paid"]
-            df["Jury_Used"] = 0.0
-            df["Maternity_Used"] = 0.0
-            df["Unpaid_Leave"] = 0.0
-            
-            st.session_state.df = df
-            st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
-            st.success("数据已重置！请点击上方下载 CSV 并覆盖仓库。")
-            st.rerun()
+        with st.expander("🛠️ 管理工具 (重置/维护)"):
+            st.warning("此区域包含敏感操作")
+            confirm_reset = st.checkbox("我确定要清空所有已用数据")
+            if confirm_reset:
+                if st.button("🗑️ 确认清空所有数据", type="primary"):
+                    df["Vacation_Used"] = 0.0
+                    df["Vacation_Remaining"] = df["Vacation_Paid"]
+                    df["Sick_Used"] = 0.0
+                    df["Sick_Remaining"] = df["Sick_Paid"]
+                    df["Personal_Used"] = 0.0
+                    df["Personal_Remaining"] = df["Personal_Paid"]
+                    df["Jury_Used"] = 0.0
+                    df["Maternity_Used"] = 0.0
+                    df["Unpaid_Leave"] = 0.0
+                    
+                    st.session_state.df = df
+                    st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
+                    st.success("数据已在内存中重置！请下载 CSV 并更新仓库。")
+                    st.rerun()
