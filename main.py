@@ -3,82 +3,92 @@ import pandas as pd
 from datetime import datetime
 import os
 
-st.set_page_config(page_title="员工假期管理系统", layout="wide")
+st.set_page_config(page_title="假期管理系统", layout="wide")
 
-# --- 1. 文件名配置 (需与 GitHub 上传的文件名完全一致) ---
-SUMMARY_FILE = "AR form.xlsx - Summary 2026 (2).csv"
-TRACKING_FILE = "AR form.xlsx - Tracking 2026 (2).csv"
+# 1. 映射 GitHub 上的文件名
+SUMMARY_FILE = "summary.csv"
+TRACKING_FILE = "tracking.csv"
 
-# --- 2. 加载数据 ---
-@st.cache_data
 def load_data():
-    if os.path.exists(SUMMARY_FILE):
-        # 读取时跳过前两行（根据你表格的结构，第3行才是真正的表头）
-        df = pd.read_csv(SUMMARY_FILE, header=2)
-        # 清理列名中的空格
-        df.columns = df.columns.str.strip()
-        # 只保留有名字的行
-        df = df.dropna(subset=['Employee Name'])
-        return df
-    else:
-        st.error(f"找不到文件: {SUMMARY_FILE}")
-        return pd.DataFrame()
+    if not os.path.exists(SUMMARY_FILE):
+        st.error(f"找不到文件: {SUMMARY_FILE}。请确保已上传并改名。")
+        return None
+    
+    # 根据你的文件预览，表头在第3行 (index 2)
+    df = pd.read_csv(SUMMARY_FILE, header=2)
+    # 清理列名中的换行符和空格
+    df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
+    # 过滤掉空行
+    df = df.dropna(subset=['Employee Name'])
+    return df
 
-df_summary = load_data()
+# 保持数据状态
+if 'df' not in st.session_state:
+    st.session_state.df = load_data()
 
-# --- 3. 映射你的假期类型到表格列名 ---
-# 你的表格列名比较长，这里做一个映射
-COLUMN_MAPPING = {
-    'P': 'Paid Personal\nLeave Days', # 优先扣除这一列
-    'S': 'Paid Sick Leave Days',
-    'V': 'Paid Vacation Days',
-    'JD': 'Paid Jury Duty Leave Days',
-    'M': 'Paid Maternity/ Paternity Leave (all calendar days)',
-    'B': 'Paid Bereavement', # 如果表格里有这一列
-    'U': 'Unpaid/Special Leave'
-}
+st.title("📅 员工假期自动管理系统")
 
-st.title("📊 假期自动更新系统 (2026 实时版)")
+if st.session_state.df is not None:
+    df = st.session_state.df
 
-if not df_summary.empty:
-    # --- 4. 侧边栏录入 ---
+    # --- 侧边栏录入 ---
     with st.sidebar:
-        st.header("📝 录入请假单")
-        with st.form("leave_form"):
-            name = st.selectbox("选择员工", df_summary['Employee Name'].unique())
-            l_type_key = st.selectbox("假种", ['S', 'V', 'JD', 'M', 'B', 'U'])
-            days = st.number_input("天数", min_value=0.5, step=0.5, value=1.0)
+        st.header("📝 录入请假")
+        with st.form("input_form"):
+            emp = st.selectbox("员工姓名", df['Employee Name'].unique())
+            # 你的 7 种假期类型映射到表格列
+            l_type = st.selectbox("请假类型", ["S (Sick)", "V (Vacation)", "JD (Jury)", "M (Maternity)", "B (Bereavement)", "U (Unpaid)"])
+            days = st.number_input("总天数", min_value=0.5, step=0.5, value=1.0)
             date = st.date_input("起始日期")
-            
-            submit = st.form_submit_button("同步更新余额")
+            submit = st.form_submit_button("确认并自动扣除 P 假")
 
             if submit:
-                # 逻辑：查找对应的行
-                row_idx = df_summary.index[df_summary['Employee Name'] == name][0]
+                idx = df.index[df['Employee Name'] == emp][0]
                 
-                # 获取 P 假的 Balance 列 (假设在 P 假大类下的第3小列)
-                # 注意：由于你的 CSV 结构复杂，这里直接寻找 "Entitled" 后的逻辑
-                # 为了简化，我们假设你只需要减少对应的数值
+                # --- 查找 P 假的 Balance 列 ---
+                # 你的表格中 "Paid Personal Leave Days" 后面通常跟着 Entitled, Used, Balance
+                # 我们假设 Balance 在该大类标题后的第 2 个位置
+                p_header = "Paid Personal Leave Days"
+                p_start_idx = df.columns.get_loc(p_header)
+                p_bal_idx = p_start_idx + 2
                 
-                # 【核心扣除逻辑】
-                p_col = "Paid Personal\nLeave Days" # 你的表格中 P 假的名称
-                actual_type_col = COLUMN_MAPPING.get(l_type_key)
+                current_p_bal = float(df.iloc[idx, p_bal_idx]) if not pd.isna(df.iloc[idx, p_bal_idx]) else 0
                 
-                # 尝试扣除
-                st.info(f"正在处理 {name} 的申请...")
-                # 这里可以添加更复杂的列定位逻辑
-                st.success(f"已录入！请在下载的报表中查看最新余额。")
+                # --- 自动扣除逻辑 ---
+                p_deduct = min(current_p_bal, days)
+                other_deduct = days - p_deduct
+                
+                # 1. 更新 P 假 Balance
+                df.iloc[idx, p_bal_idx] = current_p_bal - p_deduct
+                
+                # 2. 更新其他假种 (例如 Sick 或 Vacation)
+                # 根据你选择的类型找到对应的 Balance 列
+                type_map = {
+                    "S (Sick)": "Paid Sick Leave Days",
+                    "V (Vacation)": "Paid Vacation Days",
+                    "JD (Jury)": "Paid Jury Duty Leave Days",
+                    "M (Maternity)": "Paid Maternity/ Paternity Leave (all calendar days)",
+                    "B (Bereavement)": "Paid Bereavement",
+                    "U (Unpaid)": "Unpaid/Special Leave"
+                }
+                
+                target_header = type_map[l_type]
+                t_start_idx = df.columns.get_loc(target_header)
+                # 绝大多数假种的 Balance 都在标题后的第 2 列
+                t_bal_idx = t_start_idx + 2 if "Paid" in target_header else t_start_idx + 1
+                
+                current_t_bal = float(df.iloc[idx, t_bal_idx]) if not pd.isna(df.iloc[idx, t_bal_idx]) else 0
+                df.iloc[idx, t_bal_idx] = current_t_bal - other_deduct
+                
+                st.session_state.df = df
+                st.success(f"更新成功！已优先扣除 {p_deduct} 天 P 假。")
 
-    # --- 5. 主页面展示 ---
-    tab1, tab2 = st.tabs(["数据预览", "历史记录"])
+    # --- 主界面 ---
+    st.subheader("📊 员工假期余额实时概览 (Summary)")
+    st.dataframe(df, use_container_width=True)
     
-    with tab1:
-        st.subheader("当前员工状态 (从 Excel 导入)")
-        st.dataframe(df_summary)
-        
-        # 导出按钮
-        new_csv = df_summary.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 下载更新后的 Summary", new_csv, "Updated_Summary.csv")
-
-else:
-    st.warning("请确保已将 CSV 文件上传到 GitHub 仓库。")
+    st.divider()
+    
+    # 下载更新后的文件
+    csv_bytes = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载本月报表 (CSV)", data=csv_bytes, file_name=f"Update_{datetime.now().date()}.
