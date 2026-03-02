@@ -102,37 +102,59 @@ if st.session_state.df is not None:
                 idx = df.index[df.iloc[:, 0] == name][0]
                 val = manual_days if mode == "请假 (扣除)" else -manual_days
                 
-                if tp == "Vacation":
-                    p_rem, p_used = "Personal_Remaining", "Personal_Used"
-                    v_rem, v_used = "Vacation_Remaining", "Vacation_Used"
-                    curr_p = df.loc[idx, p_rem]
-                    p_deduct = min(curr_p, val) if val > 0 else val
-                    rest = val - p_deduct
-                    df.loc[idx, p_rem] -= p_deduct
-                    df.loc[idx, p_used] += p_deduct
-                    df.loc[idx, v_rem] -= rest
-                    df.loc[idx, v_used] += rest
-                else:
-                    mapping = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
-                    t_col = mapping[tp]
-                    if "Remaining" in t_col:
-                        df.loc[idx, t_col] -= val
-                        u_col = t_col.replace("Remaining", "Used")
-                        if u_col in df.columns: df.loc[idx, u_col] += val
-                    else:
-                        df.loc[idx, t_col] += val
-
+                # --- 🚨 核心逻辑：余额超限校验 ---
+                can_proceed = True
                 if mode == "请假 (扣除)":
-                    calendar_delta = (end_d - start_d).days + 1
-                    recs = [pd.DataFrame([[ (start_d+timedelta(days=i)).strftime("%Y-%m-%d"), name, tp, 1.0]], columns=["Date", "Name", "Type", "Days"]) for i in range(calendar_delta)]
-                    st.session_state.tracking = pd.concat([st.session_state.tracking] + recs, ignore_index=True)
-                st.session_state.df = df
-                st.rerun()
+                    if tp == "Sick":
+                        if df.loc[idx, "Sick_Remaining"] < manual_days:
+                            st.error(f"❌ 错误：{name} 的 Sick Day 余额不足（剩余 {df.loc[idx, 'Sick_Remaining']} 天）")
+                            can_proceed = False
+                    elif tp == "Personal":
+                        if df.loc[idx, "Personal_Remaining"] < manual_days:
+                            st.error(f"❌ 错误：{name} 的 Personal Day 余额不足（剩余 {df.loc[idx, 'Personal_Remaining']} 天）")
+                            can_proceed = False
+                    elif tp == "Vacation":
+                        # Vacation 总额 = Vacation_Remaining + Personal_Remaining
+                        total_v_available = df.loc[idx, "Vacation_Remaining"] + df.loc[idx, "Personal_Remaining"]
+                        if total_v_available < manual_days:
+                            st.error(f"❌ 错误：{name} 的 Vacation 总余额不足（剩余 {total_v_available} 天）")
+                            can_proceed = False
+
+                if can_proceed:
+                    # 执行扣减逻辑
+                    if tp == "Vacation":
+                        p_rem, p_used = "Personal_Remaining", "Personal_Used"
+                        v_rem, v_used = "Vacation_Remaining", "Vacation_Used"
+                        curr_p = df.loc[idx, p_rem]
+                        p_deduct = min(curr_p, val) if val > 0 else val
+                        rest = val - p_deduct
+                        df.loc[idx, p_rem] -= p_deduct
+                        df.loc[idx, p_used] += p_deduct
+                        df.loc[idx, v_rem] -= rest
+                        df.loc[idx, v_used] += rest
+                    else:
+                        mapping = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
+                        t_col = mapping[tp]
+                        if "Remaining" in t_col:
+                            df.loc[idx, t_col] -= val
+                            u_col = t_col.replace("Remaining", "Used")
+                            if u_col in df.columns: df.loc[idx, u_col] += val
+                        else:
+                            df.loc[idx, t_col] += val
+
+                    # 记录日历
+                    if mode == "请假 (扣除)":
+                        calendar_delta = (end_d - start_d).days + 1
+                        recs = [pd.DataFrame([[ (start_d+timedelta(days=i)).strftime("%Y-%m-%d"), name, tp, 1.0]], columns=["Date", "Name", "Type", "Days"]) for i in range(calendar_delta)]
+                        st.session_state.tracking = pd.concat([st.session_state.tracking] + recs, ignore_index=True)
+                    
+                    st.session_state.df = df
+                    st.success("提交成功！")
+                    st.rerun()
 
         # --- 🚨 隐藏的管理工具 ---
         st.write("---")
         with st.expander("🛠️ 管理工具 (重置/维护)"):
-            st.warning("此区域包含敏感操作")
             confirm_reset = st.checkbox("我确定要清空所有已用数据")
             if confirm_reset:
                 if st.button("🗑️ 确认清空所有数据", type="primary"):
@@ -145,8 +167,6 @@ if st.session_state.df is not None:
                     df["Jury_Used"] = 0.0
                     df["Maternity_Used"] = 0.0
                     df["Unpaid_Leave"] = 0.0
-                    
                     st.session_state.df = df
                     st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
-                    st.success("数据已在内存中重置！请下载 CSV 并更新仓库。")
                     st.rerun()
