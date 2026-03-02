@@ -12,44 +12,47 @@ def load_data():
         st.error("仓库中未找到任何包含 'summary' 的 CSV 文件")
         return None
     try:
-        # 1. 尝试用不同的编码读取，防止中文或特殊字符导致加载失败
-        try:
-            df_raw = pd.read_csv(target, header=None, encoding='utf-8-sig')
-        except:
-            df_raw = pd.read_csv(target, header=None, encoding='gbk')
+        # 1. 读取原始数据
+        df_raw = pd.read_csv(target, header=None, low_memory=False)
         
-        # 2. 暴力搜索：寻找 'Employee' 所在的行索引
+        # 2. 寻找表头行
         header_idx = None
         for i, row in df_raw.iterrows():
-            # 只要这一行任何一个格子包含 "Employee"
             if row.astype(str).str.contains("Employee", case=False).any():
                 header_idx = i
                 break
         
         if header_idx is None:
-            st.error("CSV 文件中找不到包含 'Employee' 的表头行，请检查文件第一行。")
+            st.error("CSV 文件中找不到表头行。")
             return None
 
-        # 3. 重新以该行作为表头读取数据
+        # 3. 以该行读取，并动态处理列名
         df = pd.read_csv(target, header=header_idx)
         
-        # 4. 强行应用你的 16 列标准模板，修复手动修改导致的列名漂移
-        clean_cols = [
+        # 你的标准 16 列模板
+        base_cols = [
             "Employee Name", "Employee#", 
-            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining", # 2,3,4
-            "Sick_Paid", "Sick_Used", "Sick_Remaining",             # 5,6,7
-            "Personal_Paid", "Personal_Used", "Personal_Remaining",  # 8,9,10
+            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining",
+            "Sick_Paid", "Sick_Used", "Sick_Remaining",
+            "Personal_Paid", "Personal_Used", "Personal_Remaining",
             "Jury_Used", "Maternity_Used", "Unpaid_Leave", "Placeholder", "Total_Days"
         ]
         
-        # 只取文件现有的列数进行匹配，防止溢出
-        df.columns = clean_cols[:len(df.columns)]
+        # --- 核心修复：动态对齐列名 ---
+        actual_col_count = len(df.columns)
+        if actual_col_count <= len(base_cols):
+            # 如果文件列数少于或等于模板，按需截取
+            df.columns = base_cols[:actual_col_count]
+        else:
+            # 如果文件列数多于模板（比如你有 17 列），自动补齐剩余的名字
+            extra_cols = [f"Extra_{i}" for i in range(len(base_cols), actual_col_count)]
+            df.columns = base_cols + extra_cols
         
-        # 5. 清理：删掉原本的表头行(如果它还在数据里)，并删掉姓名为空的行
-        df = df[df["Employee Name"].astype(str).str.contains("Employee") == False]
+        # 4. 清理数据
+        df = df[df["Employee Name"].astype(str).str.contains("Employee", case=False) == False]
         df = df[df["Employee Name"].notna()]
         
-        # 6. 数据转换：确保所有数字列都是数字类型
+        # 5. 转换数字（从第3列开始）
         for col in df.columns[2:]:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
@@ -58,11 +61,10 @@ def load_data():
         st.error(f"读取过程中发生错误: {e}")
         return None
 
-# 初始化数据
+# 初始化数据状态
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 if 'tracking' not in st.session_state:
-    # 自动创建 tracking 结构，防止空文件报错
     st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
 
 st.title("📊 假期管理与日历系统")
@@ -78,7 +80,7 @@ if st.session_state.df is not None:
     with st.sidebar:
         st.header("📝 录入请假")
         with st.form("input_form"):
-            names = sorted(df["Employee Name"].unique().tolist())
+            names = sorted([str(n) for n in df["Employee Name"].unique() if str(n) != 'nan'])
             name = st.selectbox("选择员工", names)
             tp = st.selectbox("假种", ["Vacation", "Sick", "Personal", "Jury", "Maternity", "Unpaid"])
             ldate = st.date_input("日期", datetime.now())
@@ -89,10 +91,9 @@ if st.session_state.df is not None:
                 idx = df.index[df["Employee Name"] == name][0]
                 val = days if mode == "请假 (扣除)" else -days
                 
-                # 只有 Vacation 抵扣 Personal
+                # Vacation 优先抵扣 Personal_Remaining (根据 base_cols，这是第 11 列，索引 10)
                 if tp == "Vacation":
                     p_rem_col, v_rem_col = "Personal_Remaining", "Vacation_Remaining"
-                    # 先看 Personal 余额
                     p_curr = df.loc[idx, p_rem_col]
                     p_deduct = min(p_curr, val) if val > 0 else val
                     rest = val - p_deduct
@@ -102,7 +103,6 @@ if st.session_state.df is not None:
                     df.loc[idx, v_rem_col] -= rest
                     df.loc[idx, "Vacation_Used"] += rest
                 else:
-                    # 其他假种逻辑
                     mapping = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
                     target = mapping[tp]
                     if "Remaining" in target:
@@ -112,7 +112,6 @@ if st.session_state.df is not None:
                     else:
                         df.loc[idx, target] += val
                 
-                # 更新 tracking
                 new_row = pd.DataFrame([[ldate.strftime("%Y-%m-%d"), name, tp, days]], columns=["Date", "Name", "Type", "Days"])
                 st.session_state.tracking = pd.concat([st.session_state.tracking, new_row], ignore_index=True)
                 st.session_state.df = df
@@ -129,3 +128,4 @@ if st.session_state.df is not None:
     with tab3:
         st.dataframe(st.session_state.tracking, use_container_width=True)
         st.download_button("📥 下载 Tracking", st.session_state.tracking.to_csv(index=False).encode('utf-8-sig'), "tracking.csv")
+        
