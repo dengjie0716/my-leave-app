@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+st.write("当前仓库里的所有文件：", os.listdir("."))
 
 st.set_page_config(page_title="假期管理系统", layout="wide")
 
@@ -87,3 +88,4 @@ if st.session_state.df is not None:
     st.download_button("📥 下载更新后的 Summary", csv_bytes, "updated_summary.csv")
 else:
     st.info("请检查 summary.csv 文件是否已正确上传并命名。")
+
