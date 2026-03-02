@@ -3,135 +3,129 @@ import pandas as pd
 import os
 from datetime import datetime
 
-st.set_page_config(page_title="假期管理与日历系统", layout="wide")
-
-SUMMARY_FILE = "summary.csv"
-TRACKING_FILE = "tracking.csv"
+st.set_page_config(page_title="假期管理系统", layout="wide")
 
 def load_data():
     all_files = os.listdir(".")
     target = next((f for f in all_files if "summary" in f.lower() and f.endswith(".csv")), None)
-    if not target: return None
+    if not target: 
+        st.error("仓库中未找到任何包含 'summary' 的 CSV 文件")
+        return None
     try:
-        # 增加容错：使用 low_memory=False 防止分块读取错误
-        df_raw = pd.read_csv(target, header=None, low_memory=False)
+        # 1. 尝试用不同的编码读取，防止中文或特殊字符导致加载失败
+        try:
+            df_raw = pd.read_csv(target, header=None, encoding='utf-8-sig')
+        except:
+            df_raw = pd.read_csv(target, header=None, encoding='gbk')
         
-        # 寻找包含 Employee 的行作为表头
-        header_idx = 0
+        # 2. 暴力搜索：寻找 'Employee' 所在的行索引
+        header_idx = None
         for i, row in df_raw.iterrows():
-            if row.astype(str).str.contains("Employee").any():
+            # 只要这一行任何一个格子包含 "Employee"
+            if row.astype(str).str.contains("Employee", case=False).any():
                 header_idx = i
                 break
         
-        # 重新读取
+        if header_idx is None:
+            st.error("CSV 文件中找不到包含 'Employee' 的表头行，请检查文件第一行。")
+            return None
+
+        # 3. 重新以该行作为表头读取数据
         df = pd.read_csv(target, header=header_idx)
         
-        # 精准强制列定义（即使你手动改乱了，程序也会强行掰回来）
+        # 4. 强行应用你的 16 列标准模板，修复手动修改导致的列名漂移
         clean_cols = [
             "Employee Name", "Employee#", 
-            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining",
-            "Sick_Paid", "Sick_Used", "Sick_Remaining",
-            "Personal_Paid", "Personal_Used", "Personal_Remaining",
+            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining", # 2,3,4
+            "Sick_Paid", "Sick_Used", "Sick_Remaining",             # 5,6,7
+            "Personal_Paid", "Personal_Used", "Personal_Remaining",  # 8,9,10
             "Jury_Used", "Maternity_Used", "Unpaid_Leave", "Placeholder", "Total_Days"
         ]
         
-        # 截取或补齐列名
+        # 只取文件现有的列数进行匹配，防止溢出
         df.columns = clean_cols[:len(df.columns)]
         
-        # 清理行：去掉表头重复行、去掉姓名为空的行
-        df = df[df["Employee Name"].astype(str) != "Employee Name"]
+        # 5. 清理：删掉原本的表头行(如果它还在数据里)，并删掉姓名为空的行
+        df = df[df["Employee Name"].astype(str).str.contains("Employee") == False]
         df = df[df["Employee Name"].notna()]
         
-        # 强制将所有数据列转为数字，防止你手动输入的“3”被识别成文字
+        # 6. 数据转换：确保所有数字列都是数字类型
         for col in df.columns[2:]:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
         return df
     except Exception as e:
-        st.error(f"数据解析失败，请检查 CSV 格式: {e}")
+        st.error(f"读取过程中发生错误: {e}")
         return None
 
-def load_tracking():
-    if os.path.exists(TRACKING_FILE):
-        try:
-            t_df = pd.read_csv(TRACKING_FILE)
-            if not t_df.empty and "Date" in t_df.columns:
-                return t_df
-        except: pass
-    return pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
-
+# 初始化数据
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 if 'tracking' not in st.session_state:
-    st.session_state.tracking = load_tracking()
+    # 自动创建 tracking 结构，防止空文件报错
+    st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
 
-st.title("📊 假期管理系统")
+st.title("📊 假期管理与日历系统")
 
-# 如果 Marie Gao 的数据加进去了，这里会显示
 if st.session_state.df is not None:
     df = st.session_state.df
-    
-    tab1, tab2, tab3 = st.tabs(["📊 余额汇总 (Summary)", "📅 日历模式 (Calendar)", "📜 历史记录 (Tracking)"])
+    tab1, tab2, tab3 = st.tabs(["📊 余额汇总", "📅 日历预览", "📜 历史记录"])
 
     with tab1:
         st.dataframe(df, use_container_width=True)
-        st.download_button("📥 下载最新 Summary CSV", df.to_csv(index=False).encode('utf-8-sig'), "summary.csv")
+        st.download_button("📥 下载最新 Summary", df.to_csv(index=False).encode('utf-8-sig'), "summary.csv")
 
     with st.sidebar:
         st.header("📝 录入请假")
-        with st.form("leave_form"):
-            # 自动过滤掉无效人名
-            names = sorted([n for n in df['Employee Name'].unique() if str(n) != 'nan'])
-            selected_name = st.selectbox("选择员工", names)
+        with st.form("input_form"):
+            names = sorted(df["Employee Name"].unique().tolist())
+            name = st.selectbox("选择员工", names)
             tp = st.selectbox("假种", ["Vacation", "Sick", "Personal", "Jury", "Maternity", "Unpaid"])
-            leave_date = st.date_input("请假日期", datetime.now())
-            days = st.number_input("天数", 0.5, 30.0, 1.0, 0.5)
-            mode = st.radio("操作类型", ["员工请假 (扣除)", "录入修正 (补回)"])
+            ldate = st.date_input("日期", datetime.now())
+            days = st.number_input("天数", 0.5, 20.0, 1.0, 0.5)
+            mode = st.radio("模式", ["请假 (扣除)", "修正 (补回)"])
             
             if st.form_submit_button("确认提交"):
-                idx = df.index[df['Employee Name'] == selected_name][0]
-                calc_days = days if mode == "员工请假 (扣除)" else -days
+                idx = df.index[df["Employee Name"] == name][0]
+                val = days if mode == "请假 (扣除)" else -days
                 
-                # --- Vacation 抵扣 Personal 逻辑 ---
+                # 只有 Vacation 抵扣 Personal
                 if tp == "Vacation":
-                    p_rem, p_used = "Personal_Remaining", "Personal_Used"
-                    curr_p = df.loc[idx, p_rem]
-                    p_deduct = min(curr_p, calc_days) if calc_days > 0 else calc_days
-                    rem_to_calc = calc_days - p_deduct
-                    df.loc[idx, p_rem] = curr_p - p_deduct
-                    df.loc[idx, p_used] = df.loc[idx, p_used] + p_deduct
-                    df.loc[idx, "Vacation_Remaining"] -= rem_to_calc
-                    df.loc[idx, "Vacation_Used"] += rem_to_calc
+                    p_rem_col, v_rem_col = "Personal_Remaining", "Vacation_Remaining"
+                    # 先看 Personal 余额
+                    p_curr = df.loc[idx, p_rem_col]
+                    p_deduct = min(p_curr, val) if val > 0 else val
+                    rest = val - p_deduct
+                    
+                    df.loc[idx, p_rem_col] -= p_deduct
+                    df.loc[idx, "Personal_Used"] += p_deduct
+                    df.loc[idx, v_rem_col] -= rest
+                    df.loc[idx, "Vacation_Used"] += rest
                 else:
-                    target_map = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
-                    t_col = target_map[tp]
-                    if "Remaining" in t_col:
-                        df.loc[idx, t_col] -= calc_days
-                        u_col = t_col.replace("Remaining", "Used")
-                        df.loc[idx, u_col] += calc_days
+                    # 其他假种逻辑
+                    mapping = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
+                    target = mapping[tp]
+                    if "Remaining" in target:
+                        df.loc[idx, target] -= val
+                        u_col = target.replace("Remaining", "Used")
+                        df.loc[idx, u_col] += val
                     else:
-                        df.loc[idx, t_col] += calc_days
-
-                if mode == "员工请假 (扣除)":
-                    new_rec = pd.DataFrame([[leave_date.strftime("%Y-%m-%d"), selected_name, tp, days]], columns=["Date", "Name", "Type", "Days"])
-                    st.session_state.tracking = pd.concat([st.session_state.tracking, new_rec], ignore_index=True)
+                        df.loc[idx, target] += val
                 
+                # 更新 tracking
+                new_row = pd.DataFrame([[ldate.strftime("%Y-%m-%d"), name, tp, days]], columns=["Date", "Name", "Type", "Days"])
+                st.session_state.tracking = pd.concat([st.session_state.tracking, new_row], ignore_index=True)
                 st.session_state.df = df
                 st.rerun()
 
     with tab2:
-        # 日历展示逻辑... (同前)
-        track_df = st.session_state.tracking
-        if not track_df.empty:
-            track_df['Date'] = pd.to_datetime(track_df['Date'])
-            month = st.selectbox("月份选择", sorted(track_df['Date'].dt.strftime('%Y-%m').unique(), reverse=True))
-            month_data = track_df[track_df['Date'].dt.strftime('%Y-%m') == month].sort_values("Date")
-            for d, group in month_data.groupby(month_data['Date'].dt.date):
-                st.write(f"🏷️ **{d}**: {', '.join([f'{r.Name}({r.Type})' for r in group.itertuples()])}")
-        else:
-            st.info("尚无记录")
+        track = st.session_state.tracking
+        if not track.empty:
+            track['Date'] = pd.to_datetime(track['Date'])
+            for d, group in track.groupby(track['Date'].dt.date):
+                st.write(f"📅 **{d}**: {', '.join([f'{r.Name}({r.Type})' for r in group.itertuples()])}")
+        else: st.info("暂无记录")
 
     with tab3:
         st.dataframe(st.session_state.tracking, use_container_width=True)
-else:
-    st.error("❌ 无法加载数据。请检查 GitHub 仓库里的 summary.csv 第一行是否包含 'Employee Name'。")
+        st.download_button("📥 下载 Tracking", st.session_state.tracking.to_csv(index=False).encode('utf-8-sig'), "tracking.csv")
