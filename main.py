@@ -4,71 +4,73 @@ import os
 
 st.set_page_config(page_title="假期管理系统", layout="wide")
 
-# 1. 精确匹配你的文件名
-FILE_NAME = "Summary 2026.csv"
+# --- 1. 自动定位文件 (不计较大小写和空格) ---
+all_files = os.listdir(".")
+target_file = next((f for f in all_files if "sum" in f.lower() and f.endswith(".csv")), None)
 
 def load_data():
-    if not os.path.exists(FILE_NAME):
-        st.error(f"找不到文件: {FILE_NAME}")
+    if not target_file:
         return None
     try:
-        # header=3 对应 CSV 中的第4行（Employee Name 所在行）
-        df = pd.read_csv(FILE_NAME, header=3)
-        # 清理列名中的换行符和空格
+        # header=3 对应你 CSV 里的第4行 (Employee Name 所在行)
+        df = pd.read_csv(target_file, header=3)
+        # 清理列名：去掉换行符和空格
         df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
-        # 只保留有名字的行，去掉空行
-        return df.dropna(subset=['Employee Name'])
+        # 移除 Employee Name 为空的无效行
+        df = df.dropna(subset=['Employee Name'])
+        return df
     except Exception as e:
-        st.error(f"解析出错: {e}")
+        st.error(f"读取文件出错: {e}")
         return None
 
+# 初始化数据状态
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
 st.title("📊 假期自动更新系统 (2026)")
 
+# --- 2. 逻辑判断 ---
 if st.session_state.df is not None:
     df = st.session_state.df
     
     with st.sidebar:
         st.header("📝 录入申请")
-        with st.form("input_form"):
-            # 动态获取员工名单
-            names = df['Employee Name'].unique().tolist()
-            name = st.selectbox("选择员工", names)
+        with st.form("leave_form"):
+            # 这里的下拉菜单会自动列出所有人选
+            emp_list = df['Employee Name'].unique().tolist()
+            name = st.selectbox("选择员工", emp_list)
+            tp = st.selectbox("申请假种", ["S", "V", "JD", "M", "B", "U"])
+            days = st.number_input("天数", 0.5, 20.0, 1.0, 0.5)
             
-            # 假种对应 (V=Vacation, S=Sick, JD=Jury, M=Maternity, B=Bereavement, U=Unpaid)
-            tp = st.selectbox("假种", ["S", "V", "JD", "M", "B", "U"])
-            days = st.number_input("总天数", 0.5, 20.0, 1.0, 0.5)
-            
-            if st.form_submit_button("确认并自动扣除 P 假"):
+            if st.form_submit_button("确认并同步"):
                 row = df.index[df['Employee Name'] == name][0]
                 
-                # --- 根据你的表格列位置进行扣除 ---
-                # P 假 Balance 索引通常在 10 左右
+                # 索引定位 (P=10, V=4, S=7, JD=13, M=15, B=16, U=17)
                 p_idx = 10
-                # 其它假种 Balance 位置映射 (基于你上传的表格结构)
                 pos_map = {"V": 4, "S": 7, "JD": 13, "M": 15, "B": 16, "U": 17}
                 
-                # 转换数字
-                curr_p = pd.to_numeric(df.iloc[row, p_idx], errors='coerce') or 0
-                p_deduct = min(curr_p, days)
-                rem_days = days - p_deduct
-                # 更新目标假种 Balance
-                target_idx = pos_map.get(tp, 4)
-                curr_target = pd.to_numeric(df.iloc[row, target_idx], errors='coerce') or 0
-                df.iloc[row, target_idx] = curr_target - rem_days
+                # 核心扣除逻辑
+                c_p = pd.to_numeric(df.iloc[row, p_idx], errors='coerce') or 0
+                p_deduct = min(c_p, days)
+                rem = days - p_deduct
+                
+                # 更新余额
+                df.iloc[row, p_idx] = c_p - p_deduct
+                t_idx = pos_map.get(tp, 4)
+                c_t = pd.to_numeric(df.iloc[row, t_idx], errors='coerce') or 0
+                df.iloc[row, t_idx] = c_t - rem
                 
                 st.session_state.df = df
-                st.success(f"✅ {name} 更新成功！优先扣除 P:{p_deduct} 天")
+                st.success(f"✅ {name} 更新成功！")
 
-    st.info(f"📁 当前数据来源: {FILE_NAME}")
-    # 显示表格
+    st.info(f"📁 成功匹配并加载文件: {target_file}")
     st.dataframe(df, use_container_width=True)
     
-    # 导出 CSV
-    csv_out = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 下载更新后的 CSV", csv_out, f"Updated_{FILE_NAME}", "text/csv")
+    # 下载功能
+    csv_bytes = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 下载更新后的 CSV", csv_bytes, f"Updated_{target_file}", "text/csv")
 
 else:
-    st.warning("正在等待文件加载...")
+    st.error("❌ 依然找不到 Summary 文件！")
+    st.write("仓库中的实际文件列表如下，请检查是否有 .csv 后缀：")
+    st.write(all_files)
