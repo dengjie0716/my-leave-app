@@ -10,52 +10,49 @@ target = next((f for f in all_files if "summary" in f.lower() and f.endswith(".c
 def load_data():
     if not target: return None
     try:
-        # 1. 寻找表头所在行
-        raw_df = pd.read_csv(target, header=None, nrows=15)
+        # 1. 定位表头
+        preview = pd.read_csv(target, header=None, nrows=15)
         header_idx = 0
-        for i, row in raw_df.iterrows():
+        for i, row in preview.iterrows():
             if row.astype(str).str.contains("Employee").any():
                 header_idx = i
                 break
         
-        # 2. 读取全部数据
-        # 不再用 names 自动匹配，而是读进来后强行替换
-        df = pd.read_csv(target, header=header_idx)
-        
-        # 3. 核心：定义你需要的唯一干净表头
+        # 2. 严格按照你描述的顺序定义列名
+        # 顺序：Name, ID, Vac(3), Sick(3), Personal(3), Jury(1), Mat(1), Unpaid(1), Total(1)
         clean_cols = [
             "Employee Name", "Employee#", 
-            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining",
-            "Sick_Paid", "Sick_Used", "Sick_Remaining",
-            "Personal_Paid", "Personal_Used", "Personal_Remaining",
-            "Jury_Paid", "Jury_Used", "Jury_Remaining",
-            "Maternity_Paid", "Maternity_Used",
-            "Unpaid_Leave", "Total_Days"
+            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining",  # 2,3,4
+            "Sick_Paid", "Sick_Used", "Sick_Remaining",              # 5,6,7
+            "Personal_Paid", "Personal_Used", "Personal_Remaining",   # 8,9,10
+            "Jury_Used",       # 11 (你提到只需要 Used)
+            "Maternity_Used",    # 12 (你提到只需要 Used)
+            "Unpaid_Leave",    # 13
+            "Total_Days"       # 14
         ]
         
-        # 强制将列名对齐，如果列数多于定义的，补上序号
-        current_len = len(df.columns)
-        final_cols = clean_cols[:current_len]
-        if current_len > len(clean_cols):
-            final_cols += [f"Extra_{i}" for i in range(len(clean_cols), current_len)]
+        # 读取数据
+        df = pd.read_csv(target, header=header_idx)
         
-        df.columns = final_cols
+        # 强制对齐列名
+        if len(df.columns) >= len(clean_cols):
+            df.columns = clean_cols + list(df.columns[len(clean_cols):])
+        else:
+            df.columns = clean_cols[:len(df.columns)]
         
-        # 4. 关键：删除读进来的第一行（如果它长得像原表头的话）
-        # 我们过滤掉名字里包含 "Name" 或 "Employee" 的那一数据行
+        # 3. 彻底清除重复的表头行
         df = df[df["Employee Name"].astype(str) != "Employee Name"]
+        df = df[df["Employee Name"].notna()]
         
-        # 清理空行
-        df = df[df['Employee Name'].notna()]
         return df
     except Exception as e:
-        st.error(f"读取失败: {e}")
+        st.error(f"对齐失败: {e}")
         return None
 
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-st.title("📊 假期管理系统")
+st.title("📊 假期管理系统 (列对齐修正版)")
 
 if st.session_state.df is not None:
     df = st.session_state.df
@@ -73,17 +70,18 @@ if st.session_state.df is not None:
                 idx = df.index[df['Employee Name'] == selected_name][0]
                 calc_days = days if mode == "员工请假 (扣除)" else -days
                 
-                # --- Vacation 优先扣 P 逻辑 ---
-                p_rem_col, p_used_col = "Personal_Remaining", "Personal_Used"
-                
+                # --- 修正后的逻辑 ---
                 if tp == "Vacation":
-                    curr_p_rem = pd.to_numeric(df.loc[idx, p_rem_col], errors='coerce') or 0
-                    p_deduct = min(curr_p_rem, calc_days) if calc_days > 0 else calc_days
+                    # 只有 Vacation 优先扣 Personal_Remaining (索引10)
+                    p_rem, p_used = "Personal_Remaining", "Personal_Used"
+                    curr_p = pd.to_numeric(df.loc[idx, p_rem], errors='coerce') or 0
+                    
+                    p_deduct = min(curr_p, calc_days) if calc_days > 0 else calc_days
                     rem_to_calc = calc_days - p_deduct
                     
                     # 更新 Personal
-                    df.loc[idx, p_rem_col] = curr_p_rem - p_deduct
-                    df.loc[idx, p_used_col] = (pd.to_numeric(df.loc[idx, p_used_col], errors='coerce') or 0) + p_deduct
+                    df.loc[idx, p_rem] = curr_p - p_deduct
+                    df.loc[idx, p_used] = (pd.to_numeric(df.loc[idx, p_used], errors='coerce') or 0) + p_deduct
                     
                     # 更新 Vacation
                     v_rem, v_used = "Vacation_Remaining", "Vacation_Used"
@@ -91,25 +89,29 @@ if st.session_state.df is not None:
                     df.loc[idx, v_used] = (pd.to_numeric(df.loc[idx, v_used], errors='coerce') or 0) + rem_to_calc
                 
                 else:
-                    # 其他假种直接操作
+                    # 其他假种映射
                     target_map = {
-                        "Sick": "Sick_Remaining", "Personal": "Personal_Remaining",
-                        "Jury": "Jury_Remaining", "Maternity": "Maternity_Used", "Unpaid": "Unpaid_Leave"
+                        "Sick": "Sick_Remaining",
+                        "Personal": "Personal_Remaining",
+                        "Jury": "Jury_Used",
+                        "Maternity": "Maternity_Used",
+                        "Unpaid": "Unpaid_Leave"
                     }
                     t_col = target_map[tp]
                     curr_val = pd.to_numeric(df.loc[idx, t_col], errors='coerce') or 0
                     
                     if "Remaining" in t_col:
+                        # 扣除余额类 (Sick/Personal)
                         df.loc[idx, t_col] = curr_val - calc_days
                         u_col = t_col.replace("Remaining", "Used")
                         df.loc[idx, u_col] = (pd.to_numeric(df.loc[idx, u_col], errors='coerce') or 0) + calc_days
                     else:
+                        # 累加已休类 (Jury/Maternity/Unpaid)
                         df.loc[idx, t_col] = curr_val + calc_days
 
                 st.session_state.df = df
-                st.success(f"✅ {selected_name} 处理成功")
+                st.success(f"✅ {selected_name} 更新成功")
 
     st.dataframe(df, use_container_width=True)
-    
     csv_bytes = df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 下载最新报表", csv_bytes, "summary.csv")
