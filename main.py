@@ -6,167 +6,139 @@ import calendar
 
 st.set_page_config(page_title="假期管理系统", layout="wide")
 
-# --- 1. 数据加载 ---
+# --- 1. 核心加载逻辑 ---
 def load_data():
     all_files = os.listdir(".")
-    target = next((f for f in all_files if "summary" in f.lower() and f.endswith(".csv")), None)
-    if not target: return None
-    try:
-        df_raw = pd.read_csv(target, header=None, low_memory=False)
-        header_idx = 0
-        for i, row in df_raw.iterrows():
-            if row.astype(str).str.contains("Employee", case=False).any():
-                header_idx = i
-                break
-        
-        df = pd.read_csv(target, skiprows=header_idx + 1, header=None)
-        
-        standard_cols = [
-            "Employee Name", "Employee#", 
-            "Vacation_Paid", "Vacation_Used", "Vacation_Remaining",
-            "Sick_Paid", "Sick_Used", "Sick_Remaining",
-            "Personal_Paid", "Personal_Used", "Personal_Remaining",
-            "Jury_Used", "Maternity_Used", "Unpaid_Leave", 
-            "Placeholder", "Total_Days"
-        ]
-        
-        actual_len = len(df.columns)
-        new_names = [standard_cols[i] if i < len(standard_cols) else f"Extra_{i}" for i in range(actual_len)]
-        df.columns = new_names
-        df = df[df.iloc[:, 0].notna() & (df.iloc[:, 0].astype(str).str.contains("Employee", case=False) == False)]
-        
-        for col in df.columns[2:]:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-    except: return None
+    s_target = next((f for f in all_files if "summary" in f.lower() and f.endswith(".csv")), None)
+    t_target = next((f for f in all_files if "tracking" in f.lower() and f.endswith(".csv")), None)
+    
+    df, track = None, pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
+    
+    if s_target:
+        try:
+            df_raw = pd.read_csv(s_target, header=None)
+            header_idx = 0
+            for i, row in df_raw.iterrows():
+                if row.astype(str).str.contains("Employee", case=False).any():
+                    header_idx = i; break
+            df = pd.read_csv(s_target, skiprows=header_idx + 1, header=None)
+            cols = ["Employee Name", "Employee#", "Vacation_Paid", "Vacation_Used", "Vacation_Remaining", "Sick_Paid", "Sick_Used", "Sick_Remaining", "Personal_Paid", "Personal_Used", "Personal_Remaining", "Jury_Used", "Maternity_Used", "Unpaid_Leave", "Placeholder", "Total_Days"]
+            df.columns = [cols[i] if i < len(cols) else f"Extra_{i}" for i in range(len(df.columns))]
+            df = df[df.iloc[:, 0].notna() & (~df.iloc[:, 0].astype(str).str.contains("Employee", case=False))]
+            for c in df.columns[2:]: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        except: pass
+    if t_target:
+        try:
+            track = pd.read_csv(t_target)
+            track['Date'] = pd.to_datetime(track['Date']).dt.strftime('%Y-%m-%d')
+        except: pass
+    return df, track
 
 if 'df' not in st.session_state:
-    st.session_state.df = load_data()
-if 'tracking' not in st.session_state:
-    st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
+    st.session_state.df, st.session_state.tracking = load_data()
 
-st.title("📊 假期管理系统")
+# --- 2. 顶部强提醒保存区域 ---
+st.title("📊 假期管理系统 (全能看板)")
 
+with st.expander("🚨 保存数据至 GitHub (操作完必点)", expanded=True):
+    st.warning("由于系统限制，网页修改后不会自动保存。请下载以下文件并上传覆盖 GitHub 仓库：")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("📥 1. 下载 Summary (余额)", st.session_state.df.to_csv(index=False).encode('utf-8-sig'), "summary.csv", "text/csv", use_container_width=True, type="primary")
+    with c2:
+        st.download_button("📥 2. 下载 Tracking (日历记录)", st.session_state.tracking.to_csv(index=False).encode('utf-8-sig'), "tracking.csv", "text/csv", use_container_width=True, type="primary")
+
+st.divider()
+
+# --- 3. 页面主体：单页纵向排版 ---
 if st.session_state.df is not None:
-    tab1, tab2, tab3 = st.tabs(["📊 余额汇总 (支持编辑)", "📅 月度日历视图", "📜 历史记录"])
+    # 第一块：余额汇总
+    st.header("1️⃣ 余额汇总 (Balance Overview)")
+    allow_edit = st.checkbox("🔓 开启手动编辑模式")
+    if allow_edit:
+        edited = st.data_editor(st.session_state.df, use_container_width=True, key="main_editor")
+        if st.button("💾 确认并保存修改"):
+            st.session_state.df = edited; st.rerun()
+    else:
+        st.dataframe(st.session_state.df, use_container_width=True)
 
-    # --- Tab 1: 汇总 & 手动编辑 ---
-    with tab1:
-        st.subheader("💡 提示：勾选下方开关可直接修改单元格")
-        allow_edit = st.checkbox("🔓 开启手动编辑模式")
+    st.divider()
+
+    # 第二块：日历概览
+    st.header("2️⃣ 月度日历视图 (Calendar Overview)")
+    track = st.session_state.tracking
+    if not track.empty:
+        track['Date'] = pd.to_datetime(track['Date'])
+        # 默认显示当前月份
+        now = datetime.now()
+        months = sorted(track['Date'].dt.strftime('%Y-%m').unique(), reverse=True)
+        sel_m = st.selectbox("📅 切换月份查看", months if months else [now.strftime('%Y-%m')])
+        y, m = map(int, sel_m.split('-'))
+        cal = calendar.monthcalendar(y, m)
         
-        if allow_edit:
-            # 使用 data_editor 实现像 Excel 一样的编辑
-            edited_df = st.data_editor(
-                st.session_state.df, 
-                use_container_width=True, 
-                num_rows="dynamic",
-                key="summary_editor"
-            )
-            if st.button("💾 保存手动修改"):
-                st.session_state.df = edited_df
-                st.success("修改已保存到内存！请记得下载 CSV 覆盖 GitHub 仓库。")
-        else:
-            st.dataframe(st.session_state.df, use_container_width=True)
-            
-        st.download_button("📥 下载最新 Summary CSV", st.session_state.df.to_csv(index=False).encode('utf-8-sig'), "summary.csv")
-
-    # --- Tab 2: 月视图 ---
-    with tab2:
-        track = st.session_state.tracking
-        if not track.empty:
-            track['Date'] = pd.to_datetime(track['Date'])
-            all_months = sorted(track['Date'].dt.strftime('%Y-%m').unique(), reverse=True)
-            sel_month_str = st.selectbox("选择月份", all_months)
-            sel_date = datetime.strptime(sel_month_str, '%Y-%m')
-            cal = calendar.monthcalendar(sel_date.year, sel_date.month)
-            
+        # 绘制日历
+        cols = st.columns(7)
+        for i, d in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]): cols[i].markdown(f"**{d}**")
+        m_data = track[track['Date'].dt.strftime('%Y-%m') == sel_m]
+        for week in cal:
             cols = st.columns(7)
-            for i, d_name in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
-                cols[i].markdown(f"**{d_name}**")
+            for i, day in enumerate(week):
+                if day != 0:
+                    curr = f"{y}-{m:02d}-{day:02d}"
+                    recs = m_data[m_data['Date'].dt.strftime('%Y-%m-%d') == curr]
+                    box = f"**{day}**"
+                    for _, r in recs.iterrows():
+                        clr = "orange" if r['Type'] == "Maternity" else ("red" if r['Type'] == "Sick" else "blue")
+                        box += f"\n\n:{clr}[{r['Name']}]"
+                    cols[i].markdown(box)
+            st.divider()
+    else:
+        st.info("目前没有请假记录，日历是空的。录入请假后会自动生成。")
 
-            month_data = track[track['Date'].dt.strftime('%Y-%m') == sel_month_str]
-            for week in cal:
-                cols = st.columns(7)
-                for i, day in enumerate(week):
-                    if day != 0:
-                        curr_str = f"{sel_date.year}-{sel_date.month:02d}-{day:02d}"
-                        day_recs = month_data[month_data['Date'].dt.strftime('%Y-%m-%d') == curr_str]
-                        box = f"**{day}**"
-                        if not day_recs.empty:
-                            for _, r in day_recs.iterrows():
-                                color = "orange" if r['Type'] == "Maternity" else ("red" if r['Type'] == "Sick" else "blue")
-                                box += f"\n\n:{color}[{r['Name']}]"
-                        cols[i].markdown(box)
-                st.divider()
-        else: st.info("暂无记录。")
+    st.divider()
 
-    # --- Tab 3: 历史记录 ---
-    with tab3:
-        st.dataframe(st.session_state.tracking, use_container_width=True)
+    # 第三块：详细记录
+    st.header("3️⃣ 历史记录详情 (History)")
+    st.dataframe(st.session_state.tracking, use_container_width=True)
 
-    # --- 侧边栏：常规录入 ---
+    # --- 4. 侧边栏：录入 ---
     with st.sidebar:
         st.header("📝 录入请假")
         df = st.session_state.df
-        with st.form("input_form"):
-            names = sorted([str(n) for n in df.iloc[:, 0].unique()])
-            name = st.selectbox("选择员工", names)
+        with st.form("leave_form"):
+            name = st.selectbox("选择员工", sorted(df.iloc[:, 0].unique()))
             tp = st.selectbox("假种", ["Vacation", "Sick", "Personal", "Jury", "Maternity", "Unpaid"])
-            start_d = st.date_input("开始日期", datetime.now())
-            end_d = st.date_input("结束日期", datetime.now())
-            manual_days = st.number_input("手动输入总天数", 0.0, 100.0, 1.0, 0.5)
+            s_d, e_d = st.date_input("开始日期"), st.date_input("结束日期")
+            m_days = st.number_input("手动天数", 0.0, 100.0, 1.0, 0.5)
             mode = st.radio("模式", ["请假 (扣除)", "修正 (补回)"])
             
-            if st.form_submit_button("确认提交"):
+            if st.form_submit_button("🚀 提交"):
                 idx = df.index[df.iloc[:, 0] == name][0]
-                val = manual_days if mode == "请假 (扣除)" else -manual_days
+                val = m_days if mode == "请假 (扣除)" else -m_days
                 
-                # 校验逻辑
-                can_proceed = True
+                # 余额逻辑
+                df.loc[idx, "Total_Days"] += val
+                mapping = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
+                if tp == "Vacation":
+                    p_rem, v_rem = "Personal_Remaining", "Vacation_Remaining"
+                    p_used, v_used = "Personal_Used", "Vacation_Used"
+                    curr_p = df.loc[idx, p_rem]
+                    p_deduct = min(curr_p, val) if val > 0 else val
+                    rest = val - p_deduct
+                    df.loc[idx, p_rem] -= p_deduct; df.loc[idx, p_used] += p_deduct
+                    df.loc[idx, v_rem] -= rest; df.loc[idx, v_used] += rest
+                elif tp in mapping:
+                    t_col = mapping[tp]
+                    if "Remaining" in t_col:
+                        df.loc[idx, t_col] -= val
+                        u_col = t_col.replace("Remaining", "Used")
+                        df.loc[idx, u_col] += val
+                    else: df.loc[idx, t_col] += val
+                
                 if mode == "请假 (扣除)":
-                    if tp == "Sick" and df.loc[idx, "Sick_Remaining"] < manual_days:
-                        st.error("Sick 余额不足"); can_proceed = False
-                    elif tp == "Personal" and df.loc[idx, "Personal_Remaining"] < manual_days:
-                        st.error("Personal 余额不足"); can_proceed = False
-
-                if can_proceed:
-                    if tp == "Vacation":
-                        p_rem, p_used = "Personal_Remaining", "Personal_Used"
-                        v_rem, v_used = "Vacation_Remaining", "Vacation_Used"
-                        curr_p = df.loc[idx, p_rem]
-                        p_deduct = min(curr_p, val) if val > 0 else val
-                        rest = val - p_deduct
-                        df.loc[idx, p_rem] -= p_deduct
-                        df.loc[idx, p_used] += p_deduct
-                        df.loc[idx, v_rem] -= rest
-                        df.loc[idx, v_used] += rest
-                    else:
-                        mapping = {"Sick":"Sick_Remaining","Personal":"Personal_Remaining","Jury":"Jury_Used","Maternity":"Maternity_Used","Unpaid":"Unpaid_Leave"}
-                        t_col = mapping[tp]
-                        if "Remaining" in t_col:
-                            df.loc[idx, t_col] -= val
-                            u_col = t_col.replace("Remaining", "Used")
-                            df.loc[idx, u_col] += val
-                        else:
-                            df.loc[idx, t_col] += val
-
-                    if mode == "请假 (扣除)":
-                        calendar_delta = (end_d - start_d).days + 1
-                        recs = [pd.DataFrame([[ (start_d+timedelta(days=i)).strftime("%Y-%m-%d"), name, tp, 1.0]], columns=["Date", "Name", "Type", "Days"]) for i in range(calendar_delta)]
-                        st.session_state.tracking = pd.concat([st.session_state.tracking] + recs, ignore_index=True)
-                    st.session_state.df = df
-                    st.rerun()
-
-        # --- 🚨 管理工具 ---
-        st.write("---")
-        with st.expander("🛠️ 管理工具"):
-            if st.checkbox("确定要清空所有数据"):
-                if st.button("🗑️ 确认清空", type="primary"):
-                    for cat in ["Vacation", "Sick", "Personal"]:
-                        df[f"{cat}_Used"] = 0.0
-                        df[f"{cat}_Remaining"] = df[f"{cat}_Paid"]
-                    df["Jury_Used"] = 0.0; df["Maternity_Used"] = 0.0; df["Unpaid_Leave"] = 0.0
-                    st.session_state.df = df
-                    st.session_state.tracking = pd.DataFrame(columns=["Date", "Name", "Type", "Days"])
-                    st.rerun()
+                    delta = (e_d - s_d).days + 1
+                    new_rows = pd.DataFrame([((s_d + timedelta(days=i)).strftime("%Y-%m-%d"), name, tp, 1.0) for i in range(delta)], columns=["Date", "Name", "Type", "Days"])
+                    st.session_state.tracking = pd.concat([st.session_state.tracking, new_rows], ignore_index=True)
+                
+                st.session_state.df = df
+                st.rerun()
